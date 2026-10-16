@@ -41,6 +41,22 @@ jobs:
         with:
           name: 3d-test-output
           path: test-output
+      - name: Build app and test the real 3D flow
+        id: e2e
+        if: always()
+        continue-on-error: true
+        run: |
+          npm run build
+          node test/e2e3d.mjs
+      - name: Report app test
+        if: always()
+        run: |
+          if [ -f test-output/e2e.txt ]; then
+            while IFS= read -r line; do echo "::notice title=app test::${line:0:900}"; done < test-output/e2e.txt
+          else
+            echo "::error title=app test::no result"
+          fi
       - name: Fail if 3D did not render
-        if: steps.t.outcome == 'failure'
+        if: steps.t.outcome == 'failure' || steps.e2e.outcome == 'failure'
         run: exit 1
+
