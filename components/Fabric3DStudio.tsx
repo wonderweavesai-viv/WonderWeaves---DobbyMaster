@@ -66,6 +66,7 @@ export const Fabric3DStudio: React.FC<Fabric3DStudioProps> = ({
     
     // Range state
     const [viewRange, setViewRange] = useState({ w: 16, h: 16 });
+    const [glError, setGlError] = useState<string | null>(null);
     
     const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
     const sceneRef = useRef<THREE.Scene | null>(null);
@@ -101,8 +102,9 @@ export const Fabric3DStudio: React.FC<Fabric3DStudioProps> = ({
     useEffect(() => {
         if (!containerRef.current) return;
 
-        const w = containerRef.current.clientWidth;
-        const h = containerRef.current.clientHeight;
+        const container = containerRef.current;
+        const w = Math.max(container.clientWidth, 320);
+        const h = Math.max(container.clientHeight, 240);
 
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x020617); // Deeper slate
@@ -111,14 +113,24 @@ export const Fabric3DStudio: React.FC<Fabric3DStudioProps> = ({
         const camera = new THREE.PerspectiveCamera(35, w / h, 0.1, 1000);
         camera.position.set(18, 12, 18);
 
-        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+        let renderer: THREE.WebGLRenderer;
+        try {
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+        } catch (err: any) {
+            console.error('3D: WebGL renderer failed', err);
+            setGlError('WebGL could not start on this device: ' + (err?.message || String(err)));
+            return;
+        }
         renderer.setSize(w, h);
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
         renderer.toneMappingExposure = 1.1;
-        containerRef.current.appendChild(renderer.domElement);
+        renderer.domElement.style.display = 'block';
+        renderer.domElement.style.width = '100%';
+        renderer.domElement.style.height = '100%';
+        container.appendChild(renderer.domElement);
 
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
@@ -157,19 +169,44 @@ export const Fabric3DStudio: React.FC<Fabric3DStudioProps> = ({
         cameraRef.current = camera;
         controlsRef.current = controls;
 
+        const resize = () => {
+            const cw = container.clientWidth;
+            const ch = container.clientHeight;
+            if (cw < 2 || ch < 2) return;
+            renderer.setSize(cw, ch, false);
+            camera.aspect = cw / ch;
+            camera.updateProjectionMatrix();
+        };
+        resize();
+        const observer = new ResizeObserver(resize);
+        observer.observe(container);
+
+        let failed = false;
         const animate = () => {
+            if (failed) return;
             frameIdRef.current = requestAnimationFrame(animate);
-            controls.update();
-            renderer.render(scene, camera);
+            try {
+                controls.update();
+                renderer.render(scene, camera);
+            } catch (err: any) {
+                failed = true;
+                console.error('3D: render failed', err);
+                setGlError('3D render error: ' + (err?.message || String(err)));
+            }
         };
         animate();
 
         return () => {
+            observer.disconnect();
+            controls.dispose();
             cancelAnimationFrame(frameIdRef.current);
             renderer.dispose();
-            if (containerRef.current && renderer.domElement.parentNode) {
-                containerRef.current.removeChild(renderer.domElement);
+            renderer.forceContextLoss();
+            if (renderer.domElement.parentNode) {
+                renderer.domElement.parentNode.removeChild(renderer.domElement);
             }
+            rendererRef.current = null;
+            sceneRef.current = null;
         };
     }, []);
 
@@ -177,6 +214,7 @@ export const Fabric3DStudio: React.FC<Fabric3DStudioProps> = ({
     useEffect(() => {
         if (!sceneRef.current || !rendererRef.current) return;
         const scene = sceneRef.current;
+        try {
 
         for (let i = scene.children.length - 1; i >= 0; i--) {
             const obj = scene.children[i];
@@ -292,11 +330,23 @@ export const Fabric3DStudio: React.FC<Fabric3DStudioProps> = ({
             controlsRef.current?.target.set(0, 0, 0);
         }
 
+        } catch (err: any) {
+            console.error('3D: scene build failed', err);
+            setGlError('Could not build the 3D fabric: ' + (err?.message || String(err)));
+        }
     }, [mode, drapeObject, structure, warpYarns, weftYarns, textureUrl, viewRange]);
 
     return (
-        <div className="relative w-full h-full bg-slate-950 group font-sans">
-            <div ref={containerRef} className="w-full h-full" />
+        <div className="relative w-full h-full min-h-[300px] bg-slate-950 group font-sans" style={{ flex: "1 1 auto", alignSelf: "stretch" }}>
+            <div ref={containerRef} className="absolute inset-0" />
+            {glError && (
+                <div className="absolute inset-0 flex items-center justify-center p-6 pointer-events-none">
+                    <div className="max-w-md bg-red-950/90 border border-red-700 text-red-100 text-sm rounded-xl p-4 shadow-2xl">
+                        <div className="font-bold mb-1">3D view problem</div>
+                        <div className="break-words">{glError}</div>
+                    </div>
+                </div>
+            )}
             
             {/* 3D Navigation Overlay */}
             <div className="absolute top-4 right-4 flex flex-col gap-4">
