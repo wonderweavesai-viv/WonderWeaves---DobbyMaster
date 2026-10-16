@@ -45,11 +45,31 @@
   "build": {
     "appId": "com.wonderweaves.dobbymaster",
     "productName": "WonderWeaves Dobby Master",
-    "directories": { "output": "release" },
-    "files": ["dist/**/*", "electron/**/*", "package.json"],
-    "win": { "target": ["nsis", "portable"] },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true },
-    "mac": { "target": ["dmg"], "category": "public.app-category.graphics-design", "identity": null },
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.graphics-design",
+      "identity": null
+    },
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
   }
 }
