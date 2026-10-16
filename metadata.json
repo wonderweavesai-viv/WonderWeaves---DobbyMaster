@@ -1,0 +1,6 @@
+{
+  "name": "WonderWeaves - Dobby Master",
+  "description": "An interactive web application for designing textile weaves and patterns. Users can define the draft, peg plan, warp, and weft patterns to visualize the resulting fabric in real-time. A perfect tool for weavers, textile designers, and hobbyists to experiment with patterns digitally.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

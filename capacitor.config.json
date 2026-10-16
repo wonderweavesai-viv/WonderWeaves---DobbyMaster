@@ -1,0 +1,6 @@
+{
+  "appId": "com.wonderweaves.dobbymaster",
+  "appName": "WonderWeaves",
+  "webDir": "dist",
+  "android": { "allowMixedContent": false }
+}
