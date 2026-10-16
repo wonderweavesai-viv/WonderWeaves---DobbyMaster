@@ -14,7 +14,15 @@ jobs:
         with:
           node-version: 20
       - run: npm install --no-audit --no-fund
-      - run: npx vite build -c vite.test.config.ts
+      - name: Build test page
+        run: |
+          set +e
+          npx vite build -c vite.test.config.ts > build.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            tail -n 25 build.log | while IFS= read -r line; do echo "::error title=test build::${line:0:600}"; done
+          fi
+          exit $code
       - run: npx playwright install --with-deps chromium
       - name: Run 3D test
         id: t
