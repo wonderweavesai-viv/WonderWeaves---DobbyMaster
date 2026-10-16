@@ -1,0 +1,38 @@
+name: Test 3D view
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test3d:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - run: npx vite build -c vite.test.config.ts
+      - run: npx playwright install --with-deps chromium
+      - name: Run 3D test
+        id: t
+        run: node test/run3d.mjs
+        continue-on-error: true
+      - name: Report result as annotations
+        if: always()
+        run: |
+          if [ -f test-output/result.txt ]; then
+            while IFS= read -r line; do echo "::notice title=3D test::${line:0:900}"; done < test-output/result.txt
+          else
+            echo "::error title=3D test::test did not produce a result"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: 3d-test-output
+          path: test-output
+      - name: Fail if 3D did not render
+        if: steps.t.outcome == 'failure'
+        run: exit 1
