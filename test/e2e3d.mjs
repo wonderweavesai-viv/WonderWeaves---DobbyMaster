@@ -21,6 +21,7 @@ const note = (m) => { out.push(m); console.log(m); };
 fs.mkdirSync('test-output', { recursive: true });
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+console.log('cpus', (await import('node:os')).cpus().length);
 page.on('console', (m) => { if (['error'].includes(m.type())) note(`console.error: ${m.text().slice(0, 300)}`); });
 page.on('pageerror', (e) => note(`pageerror: ${e.message.slice(0, 300)}`));
 
@@ -44,8 +45,9 @@ try {
   const t0 = Date.now();
   await Promise.race([page.evaluate(() => 1), new Promise((_, rej) => setTimeout(() => rej(new Error('main thread still blocked after 150s: likely endless loop')), 150000))]);
   note(`SIM screen became responsive after ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-  await page.waitForTimeout(3000);
-  await page.screenshot({ path: 'test-output/step-after-simulate.png' });
+  const t1 = Date.now();
+  await page.screenshot({ path: 'test-output/step-after-simulate.png', timeout: 170000 });
+  note(`2D simulation finished and page repainted after ${((Date.now() - t1) / 1000).toFixed(1)}s`);
   step = 'click 3D View';
   page.setDefaultTimeout(60000);
   await page.getByText('3D View', { exact: true }).first().click();
