@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { YarnDefinition, YarnModel, YarnConstruction, FiberType } from '../types';
 import { generateYarnTexture } from '../services/yarnRenderer';
+import { Workspace, buildYarnFile } from '../services/workspace/workspace';
+import { YarnFile } from '../services/workspace/formats';
+import { askText, askConfirm, toast } from '../services/ui/dialogs';
 import { RulerIcon, CopyIcon, ZoomInIcon, ZoomOutIcon, ResetZoomIcon, ShuffleIcon, PencilIcon, PlusIcon, TrashIcon } from './icons';
 
 interface YarnStudioProps {
@@ -60,15 +63,26 @@ export const YarnStudio: React.FC<YarnStudioProps> = ({
     const [viewScale, setViewScale] = useState(0.2);
     const [searchTerm, setSearchTerm] = useState('');
     
-    const [customLibrary, setCustomLibrary] = useState<{ name: string, def: YarnDefinition, id: number }[]>(() => {
-        try {
-            const saved = localStorage.getItem('wonderweaves_custom_yarns');
-            return saved ? JSON.parse(saved) : [];
-        } catch (e) { 
-            console.error("Failed to load yarn library", e);
-            return []; 
-        }
-    });
+    type CustomYarn = { name: string, def: YarnDefinition, id: number, file: string };
+    const [customLibrary, setCustomLibrary] = useState<CustomYarn[]>([]);
+
+    // Yarns live as .wwyarn files in the workspace folder.
+    useEffect(() => {
+        let alive = true;
+        const load = async () => {
+            try {
+                const items = await Workspace.list('yarn');
+                const files = await Promise.all(items.map(i => Workspace.load<YarnFile>('yarn', i.filename).then(f => ({ f, file: i.filename })).catch(() => null)));
+                if (!alive) return;
+                setCustomLibrary(files.filter((x): x is { f: YarnFile; file: string } => !!x)
+                    .map(x => ({ name: x.f.meta.name, def: x.f.yarn, id: x.f.meta.created, file: x.file }))
+                    .sort((a, b) => b.id - a.id));
+            } catch (e) { console.error('Failed to load yarn library', e); }
+        };
+        load();
+        const un = Workspace.subscribe(load);
+        return () => { alive = false; un(); };
+    }, []);
 
     const displayLibrary = useMemo(() => {
         const allItems = [
@@ -95,38 +109,27 @@ export const YarnStudio: React.FC<YarnStudioProps> = ({
         onChange({ ...def });
     };
 
-    const handleSaveToLibrary = () => {
+    const handleSaveToLibrary = async () => {
         const defaultName = yarn.code || `My ${yarn.fiberType} Yarn`;
-        const name = prompt("Name your yarn preset:", defaultName);
+        const name = await askText('Name your yarn', defaultName, { label: 'Yarn name', confirmLabel: 'Save yarn' });
         if (!name) return;
-
         try {
-            const newItem = { name, def: { ...yarn }, id: Date.now() };
-            
-            setCustomLibrary(prev => {
-                const updated = [newItem, ...prev];
-                try {
-                    localStorage.setItem('wonderweaves_custom_yarns', JSON.stringify(updated));
-                } catch(e) {
-                    alert("Could not save to local storage (Quota exceeded?)");
-                }
-                return updated;
-            });
+            await Workspace.save('yarn', buildYarnFile(name, { ...yarn }));
             setSearchTerm('');
-        } catch (e) {
-            console.error("Error saving yarn:", e);
+            toast('Yarn saved to your folder.', 'success');
+        } catch (e: any) {
+            console.error('Error saving yarn:', e);
+            toast('Could not save the yarn: ' + (e?.message || 'unknown error'), 'error');
         }
     };
 
-    const handleDeleteFromLibrary = (id: number, e: React.MouseEvent) => {
+    const handleDeleteFromLibrary = async (id: number, e: React.MouseEvent) => {
         e.stopPropagation();
-        if(window.confirm('Delete this preset from your library?')) {
-            setCustomLibrary(prev => {
-                const updated = prev.filter(item => item.id !== id);
-                localStorage.setItem('wonderweaves_custom_yarns', JSON.stringify(updated));
-                return updated;
-            });
-        }
+        const item = customLibrary.find(c => c.id === id);
+        if (!item) return;
+        const ok = await askConfirm('Delete yarn?', `"${item.name}" will be removed from your yarn library.`, { confirmLabel: 'Delete', danger: true });
+        if (!ok) return;
+        try { await Workspace.remove('yarn', item.file); } catch (err) { console.error(err); toast('Could not delete the yarn.', 'error'); }
     };
 
     useEffect(() => {

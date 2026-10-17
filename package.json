@@ -25,7 +25,9 @@
     "lucide-react": "^0.344.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "three": "^0.160.0"
+    "three": "^0.160.0",
+    "@capacitor/filesystem": "^6.0.1",
+    "@capacitor/share": "^6.0.2"
   },
   "devDependencies": {
     "@capacitor/cli": "^6.1.2",
@@ -72,6 +74,28 @@
       "category": "public.app-category.graphics-design",
       "identity": null
     },
-    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "fileAssociations": [
+      {
+        "ext": "wwdesign",
+        "name": "WonderWeaves Design",
+        "role": "Editor"
+      },
+      {
+        "ext": "wwweave",
+        "name": "WonderWeaves Weave",
+        "role": "Editor"
+      },
+      {
+        "ext": "wwyarn",
+        "name": "WonderWeaves Yarn",
+        "role": "Editor"
+      },
+      {
+        "ext": "wwpalette",
+        "name": "WonderWeaves Palette",
+        "role": "Editor"
+      }
+    ]
   }
 }

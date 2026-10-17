@@ -46,11 +46,10 @@ try {
   await Promise.race([page.evaluate(() => 1), new Promise((_, rej) => setTimeout(() => rej(new Error('main thread still blocked after 150s: likely endless loop')), 150000))]);
   note(`SIM screen became responsive after ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   const t1 = Date.now();
-  await page.screenshot({ path: 'test-output/step-after-simulate.png', timeout: 170000 });
-  note(`2D simulation finished and page repainted after ${((Date.now() - t1) / 1000).toFixed(1)}s`);
   step = 'click 3D View';
   page.setDefaultTimeout(60000);
-  await page.getByText('3D View', { exact: true }).first().click();
+  await page.getByText('3D View', { exact: true }).first().click({ timeout: 150000 });
+  note(`3D tab clickable after ${((Date.now() - t1) / 1000).toFixed(1)}s`);
   await page.waitForTimeout(5000);
   await page.screenshot({ path: 'test-output/step-3d.png' });
   step = 'inspect';

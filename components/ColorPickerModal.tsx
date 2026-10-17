@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { OFFICIAL_PANTONE_TPX } from '../services/pantoneColors';
 import { StorageService } from '../services/io/storage';
 import { ShadeCard, ShadeColor } from '../types';
+import { askText } from '../services/ui/dialogs';
 import { PlusIcon, TrashIcon, PaletteIcon, ListIcon, MagicWandIcon } from './icons';
 
 interface ColorPickerModalProps {
@@ -48,7 +49,7 @@ export const ColorPickerModal: React.FC<ColorPickerModalProps> = ({
     }, [activeCard, searchQuery]);
 
     const handleCreatePalette = async () => {
-        const name = prompt("Enter name for new Shade Card:");
+        const name = await askText("New shade card", "", { label: "Shade card name", confirmLabel: "Create" });
         if (!name) return;
         const newCard: ShadeCard = {
             id: `user-card-${Date.now()}`,

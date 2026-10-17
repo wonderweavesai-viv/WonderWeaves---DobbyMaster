@@ -1,4 +1,6 @@
-import { WeaveProjectFile, ShadeCard } from '../../types';
+import { WeaveProjectFile, ShadeCard, YarnDefinition } from '../../types';
+import { Workspace, buildPaletteFile } from '../workspace/workspace';
+import { PaletteFile } from '../workspace/formats';
 
 const DB_NAME = 'WonderWeavesDB';
 const DB_VERSION = 2; // Incremented for palettes store
@@ -90,37 +92,66 @@ export const StorageService = {
         });
     },
 
-    // --- PALETTE MANAGEMENT ---
+    // --- PALETTE MANAGEMENT (files in the workspace folder) ---
     savePalette: async (card: ShadeCard) => {
-        const db = await openDB();
-        return new Promise<void>((resolve, reject) => {
-            const tx = db.transaction('palettes', 'readwrite');
-            const store = tx.objectStore('palettes');
-            store.put(card);
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => reject(tx.error);
-        });
+        const items = await Workspace.list('palette');
+        const existing = items.find(i => i.meta.id === card.id);
+        const file = buildPaletteFile(card, existing ? { created: existing.meta.created, tags: existing.meta.tags } : {});
+        await Workspace.save('palette', file, existing?.filename);
     },
 
     getAllPalettes: async (): Promise<ShadeCard[]> => {
-        const db = await openDB();
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction('palettes', 'readonly');
-            const store = tx.objectStore('palettes');
-            const request = store.getAll();
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error);
-        });
+        const items = await Workspace.list('palette');
+        const files = await Promise.all(items.map(i => Workspace.load<PaletteFile>('palette', i.filename).catch(() => null)));
+        return files.filter((f): f is PaletteFile => !!f).map(f => f.palette);
     },
 
     deletePalette: async (id: string) => {
+        const items = await Workspace.list('palette');
+        const existing = items.find(i => i.meta.id === id);
+        if (existing) await Workspace.remove('palette', existing.filename);
+    },
+
+    // --- OLDER STORAGE (browser database), kept only so it can be moved into files ---
+    hasLegacyData: async (): Promise<boolean> => {
+        try {
+            if (typeof indexedDB === 'undefined') return false;
+            const db = await openDB();
+            const count = (store: string) => new Promise<number>(res => {
+                const r = db.transaction(store, 'readonly').objectStore(store).count();
+                r.onsuccess = () => res(r.result); r.onerror = () => res(0);
+            });
+            const total = (await count('projects')) + (await count('palettes'));
+            let yarns = 0;
+            try { yarns = JSON.parse(localStorage.getItem('wonderweaves_custom_yarns') || '[]').length; } catch { /* none */ }
+            return total + yarns > 0;
+        } catch { return false; }
+    },
+
+    readLegacy: async (): Promise<{
+        projects: { project: WeaveProjectFile; thumbnail?: string }[];
+        palettes: ShadeCard[];
+        yarns: { name: string; def: YarnDefinition }[];
+    }> => {
         const db = await openDB();
-        return new Promise<void>((resolve, reject) => {
-            const tx = db.transaction('palettes', 'readwrite');
-            const store = tx.objectStore('palettes');
-            store.delete(id);
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => reject(tx.error);
+        const all = (store: string) => new Promise<any[]>((res, rej) => {
+            const r = db.transaction(store, 'readonly').objectStore(store).getAll();
+            r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
         });
+        const projects = (await all('projects')).map(p => ({ project: p as WeaveProjectFile, thumbnail: p.thumbnail as string | undefined }));
+        const palettes = (await all('palettes')) as ShadeCard[];
+        let yarns: { name: string; def: YarnDefinition }[] = [];
+        try { yarns = JSON.parse(localStorage.getItem('wonderweaves_custom_yarns') || '[]'); } catch { /* none */ }
+        // Skip anything that is already in the workspace so running this twice does not duplicate.
+        const have = {
+            design: new Set((await Workspace.list('design')).map(i => i.meta.id)),
+            palette: new Set((await Workspace.list('palette')).map(i => i.meta.id)),
+            yarn: new Set((await Workspace.list('yarn')).map(i => i.meta.name)),
+        };
+        return {
+            projects: projects.filter(p => !have.design.has(p.project.id as string)),
+            palettes: palettes.filter(c => !have.palette.has(c.id)),
+            yarns: yarns.filter(y => !have.yarn.has(y.name)),
+        };
     }
 };

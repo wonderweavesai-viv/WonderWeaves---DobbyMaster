@@ -21,7 +21,12 @@ import { PANTONE_PALETTE } from '../services/pantoneColors';
 import { generateSpecSheet } from '../services/pdfGenerator';
 import { ProductionCalculator } from './ProductionCalculator'; 
 import { YarnStudio } from './YarnStudio';
-import { ProjectManagerModal } from './ProjectManagerModal'; 
+import { DesignBrowserModal } from './DesignBrowserModal';
+import { DialogHost } from './DialogHost';
+import { Workspace, buildDesignFile, buildWeaveFile, migrateLegacyData } from '../services/workspace/workspace';
+import { DesignFile, ItemMeta, WeaveFile, newId } from '../services/workspace/formats';
+import { classifyStructure, minimalRepeat } from '../services/workspace/classify';
+import { askText, toast } from '../services/ui/dialogs';
 import { ColorwayStudio } from './ColorwayStudio';
 import { SaveIcon, UploadIcon, PlusIcon, WeaveIcon, TableIcon, RulerIcon, GridFillIcon, CheckIcon } from './icons';
 
@@ -43,11 +48,7 @@ interface HistoryState {
     weftZones: DensityZone[];
 }
 
-const isTauri = !!(window as any).__TAURI__;
-
 export const DobbyMaster: React.FC = () => {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
   const [appMode, setAppMode] = useState<AppMode>('weave');
   const [showStartup, setShowStartup] = useState(true);
   const [startupMode, setStartupMode] = useState<'choice' | 'new'>('choice');
@@ -66,7 +67,10 @@ export const DobbyMaster: React.FC = () => {
   };
 
   const [showSimModal, setShowSimModal] = useState(false);
-  const [showProjectManager, setShowProjectManager] = useState(false); 
+  const [showProjectManager, setShowProjectManager] = useState(false);
+  const [currentFilename, setCurrentFilename] = useState<string | null>(null);
+  const [hasLegacy, setHasLegacy] = useState(false);
+  const weaveFiles = useRef<Map<string, string>>(new Map()); // weave id -> file name
   const [showDraftStudio, setShowDraftStudio] = useState(false);
   const [showPegPlanStudio, setShowPegPlanStudio] = useState(false);
   const [layoutCorner, setLayoutCorner] = useState<LayoutCorner>('TL');
@@ -243,6 +247,35 @@ export const DobbyMaster: React.FC = () => {
       return () => { active = false; };
   }, [draft, pegPlan, warpPattern, weftPattern]);
 
+  // Load the user's weaves from the workspace folder, and keep them up to date.
+  useEffect(() => {
+      let alive = true;
+      const loadWeaves = async () => {
+          try {
+              const items = await Workspace.list('weave');
+              const files = await Promise.all(items.map(i => Workspace.load<WeaveFile>('weave', i.filename).then(f => ({ f, name: i.filename })).catch(() => null)));
+              if (!alive) return;
+              const map = new Map<string, string>();
+              const weaves: LibraryWeave[] = [];
+              files.forEach(x => { if (x) { weaves.push(x.f.weave); map.set(x.f.weave.id, x.name); } });
+              weaveFiles.current = map;
+              setCustomWeaves(weaves);
+          } catch (e) { console.error('Could not load weaves', e); }
+      };
+      loadWeaves();
+      const un = Workspace.subscribe(loadWeaves);
+      StorageService.hasLegacyData().then(v => { if (alive) setHasLegacy(v); }).catch(() => {});
+      return () => { alive = false; un(); };
+  }, []);
+
+  // Files opened from the operating system (double-click on a .wwdesign).
+  useEffect(() => Workspace.onOpenFile(async file => {
+      const parsed = Workspace.openExternal(file);
+      if (!parsed) { toast('That file is not a WonderWeaves file.', 'error'); return; }
+      if (parsed.fileType === 'wonderweaves-design') loadDesignFile(parsed as DesignFile, null);
+      else { const r = await Workspace.importFiles([file]); toast(r.added ? 'Added to your library.' : 'Could not open that file.', r.added ? 'success' : 'error'); }
+  }), []);
+
   const getProjectObject = useCallback((): WeaveProjectFile => ({
       fileType: 'wonderweaves-project', version: APP_VERSION, timestamp: Date.now(), name: projectName, loom: settings,
       grids: { draft: serializeGrid(draft), pegPlan: serializeGrid(pegPlan), denting: dentingPlan },
@@ -257,25 +290,120 @@ export const DobbyMaster: React.FC = () => {
       return thumbCanvas.toDataURL('image/jpeg', 0.8);
   }, [weavePattern, settings, dentingPlan, warpYarns, weftYarns, warpPatternString, weftPatternString]);
 
-  const handleSaveToLibrary = async () => {
-      try {
-          const thumb = generateThumbnail();
-          const project = getProjectObject();
-          const id = currentProjectId || Date.now().toString();
-          const projectToSave = { ...project, id };
-          await StorageService.saveProject(projectToSave, thumb);
-          setCurrentProjectId(id);
-          alert("Project saved to local library.");
-      } catch (e) { console.error(e); alert("Failed to save project."); }
+  const buildMeta = (): Partial<ItemMeta> => {
+      const letters = (str: string) => Array.from(new Set(((str || '').match(/[A-Za-z]/g) || []).map(c => c.toUpperCase())));
+      const colors: string[] = [];
+      const fibers = new Set<string>();
+      letters(warpPatternString).forEach(l => { const y = warpYarns[l]; if (y?.color) { colors.push(y.color); if (y.fiberType) fibers.add(y.fiberType); } });
+      letters(weftPatternString).forEach(l => { const y = weftYarns[l]; if (y?.color) { colors.push(y.color); if (y.fiberType) fibers.add(y.fiberType); } });
+      return {
+          weaveClass: classifyStructure(weavePattern.structure),
+          harnesses: settings.harnesses, ends: settings.warpThreads, picks: settings.weftPicks,
+          epi: settings.epi, ppi: settings.ppi,
+          colors: Array.from(new Set(colors.map(c => c.toLowerCase()))).slice(0, 8),
+          fibers: Array.from(fibers),
+      };
   };
+
+  const saveDesign = async (asCopy: boolean) => {
+      try {
+          let name = projectName && !/^untitled/i.test(projectName) ? projectName : '';
+          if (!currentFilename || asCopy) {
+              const n = await askText(asCopy ? 'Save a copy as' : 'Save design', name || 'My design', { label: 'Design name', confirmLabel: 'Save' });
+              if (!n) return;
+              name = n;
+          }
+          name = name || projectName || 'My design';
+          setProjectName(name);
+          let keep: Partial<ItemMeta> = {};
+          if (currentFilename && !asCopy) {
+              try { const old = await Workspace.load<DesignFile>('design', currentFilename); keep = { id: old.meta.id, created: old.meta.created, tags: old.meta.tags, notes: old.meta.notes }; } catch { /* file was removed */ }
+          }
+          const project = { ...getProjectObject(), name };
+          const file = buildDesignFile(project, { name, ...keep, ...buildMeta() }, generateThumbnail());
+          const fname = await Workspace.save('design', file, currentFilename && !asCopy && keep.id ? currentFilename : undefined);
+          setCurrentFilename(fname);
+          setCurrentProjectId(file.meta.id);
+          toast(asCopy ? 'Copy saved to your folder.' : 'Design saved to your folder.', 'success');
+      } catch (e: any) { console.error(e); toast('Could not save the design: ' + (e?.message || 'unknown error'), 'error'); }
+  };
+
+  const handleSaveToLibrary = () => saveDesign(false);
 
   const handleExport = useCallback(async () => {
       try {
-          const projectData = getProjectObject();
-          const cleanName = (projectName || 'Untitled').replace(/[/\\?%*:|"<>]/g, '-').replace(/\s+/g, '_');
-          downloadFile(JSON.stringify(projectData, null, 2), `${cleanName}-${new Date().toISOString().split('T')[0]}.weave`);
-      } catch (e) { console.error(e); }
-  }, [projectName, getProjectObject]);
+          const name = (projectName || 'Untitled').replace(/[\\/?%*:|"<>]/g, '-');
+          const file = buildDesignFile({ ...getProjectObject(), name }, { name, ...buildMeta() }, generateThumbnail());
+          const ok = await Workspace.exportText(`${name}.wwdesign`, JSON.stringify(file));
+          if (ok) toast('Copy saved.', 'success');
+      } catch (e) { console.error(e); toast('Could not export the design.', 'error'); }
+  }, [projectName, getProjectObject, generateThumbnail, weavePattern, settings, warpYarns, weftYarns, warpPatternString, weftPatternString]);
+
+  const handleSaveAsWeave = async () => {
+      try {
+          const n = await askText('Save as weave', projectName && !/^untitled/i.test(projectName) ? projectName : 'My weave', { label: 'Weave name', confirmLabel: 'Save weave' });
+          if (!n) return;
+          // Keep only the smallest repeating part of the draft and peg plan.
+          const dRows = serializeGrid(draft);
+          const pRows = serializeGrid(pegPlan);
+          const dRep = minimalRepeat(draft);
+          const pRep = minimalRepeat(pegPlan);
+          const draftCols = dRep[0]?.length || dRows[0]?.length || 0;
+          const pegRows = pRep.length || pRows.length;
+          const cls = classifyStructure(weavePattern.structure);
+          const category = cls === 'Twill' ? 'Twill' : cls === 'Satin' ? 'Satin' : cls === 'Rib' ? 'Rib' : cls === 'Plain' || cls === 'Basket' ? 'Basic' : 'Structure';
+          const weave: LibraryWeave = {
+              id: 'custom-' + newId(), name: n, category: category as LibraryWeave['category'],
+              description: 'Saved from design' + (projectName ? ` "${projectName}"` : ''),
+              harnesses: settings.harnesses,
+              draft: dRows.map(r => r.slice(0, draftCols)),
+              pegPlan: pRows.slice(0, pegRows),
+          };
+          const file = buildWeaveFile(weave, { name: n, tags: [cls.toLowerCase()], weaveClass: cls });
+          const fname = await Workspace.save('weave', file);
+          weaveFiles.current.set(weave.id, fname);
+          setCustomWeaves(prev => [...prev, weave]);
+          toast('Saved to your weave library.', 'success');
+      } catch (e: any) { console.error(e); toast('Could not save the weave: ' + (e?.message || 'unknown error'), 'error'); }
+  };
+
+  const persistWeave = async (w: LibraryWeave, isNew: boolean) => {
+      try {
+          const cls = classifyStructure(Array.from({ length: w.pegPlan.length }, (_, r) => Array.from({ length: w.draft[0]?.length || 0 }, (_, c) => {
+              // interlacement from draft and peg plan (warp up where the harness holding this end is lifted)
+              let up = false; for (let h = 0; h < w.harnesses; h++) if (w.draft[h]?.[c] === 1 && w.pegPlan[r]?.[h] === 1) up = true; return up; })));
+          const existing = weaveFiles.current.get(w.id);
+          const file = buildWeaveFile(w, { name: w.name, weaveClass: cls });
+          const fname = await Workspace.save('weave', file, isNew ? undefined : existing);
+          weaveFiles.current.set(w.id, fname);
+      } catch (e) { console.error(e); toast('Could not save the weave to your folder.', 'error'); }
+  };
+
+  const removeWeaveFile = async (id: string) => {
+      const fname = weaveFiles.current.get(id);
+      if (!fname) return;
+      try { await Workspace.remove('weave', fname); weaveFiles.current.delete(id); } catch (e) { console.error(e); }
+  };
+
+  const handleImportFiles = async () => {
+      try {
+          const r = await Workspace.importFromPicker();
+          if (!r.added && !r.skipped.length) return;
+          const designs = r.items.filter(i => i.kind === 'design');
+          if (r.added === 1 && designs.length === 1) {
+              const f = await Workspace.load<DesignFile>('design', designs[0].filename);
+              loadDesignFile(f, designs[0].filename);
+          } else if (r.added) toast(`Added ${r.added} file${r.added > 1 ? 's' : ''} to your library.`, 'success');
+          if (r.skipped.length) toast(`${r.skipped.length} file(s) were not WonderWeaves files.`, 'error');
+      } catch (e) { console.error(e); toast('Could not import the file.', 'error'); }
+  };
+
+  const handleMigrateLegacy = async (): Promise<string> => {
+      const c = await migrateLegacyData(StorageService.readLegacy);
+      setHasLegacy(false);
+      const parts = [c.designs && `${c.designs} design${c.designs > 1 ? 's' : ''}`, c.palettes && `${c.palettes} palette${c.palettes > 1 ? 's' : ''}`, c.yarns && `${c.yarns} yarn${c.yarns > 1 ? 's' : ''}`].filter(Boolean);
+      return parts.length ? `Brought in ${parts.join(', ')} from older versions.` : 'Nothing new to bring in.';
+  };
 
   const loadProjectData = (data: WeaveProjectFile) => {
       saveHistory();
@@ -294,30 +422,10 @@ export const DobbyMaster: React.FC = () => {
       setShowStartup(false);
   };
 
-  const handleLoadFromFile = async (event?: React.ChangeEvent<HTMLInputElement>) => {
-      if (isTauri && !event) {
-          // Native Tauri File Picker
-          try {
-              const content = await loadFile();
-              if (content && content.includes('wonderweaves-project')) {
-                  loadProjectData(JSON.parse(content));
-              }
-          } catch (e) { console.error(e); }
-          return;
-      }
-
-      const file = event?.target.files?.[0];
-      if (!file) return;
-      try {
-          const content = await loadFile(file);
-          if (!content.includes('wonderweaves-project')) { alert("Invalid project file format."); return; }
-          loadProjectData(JSON.parse(content));
-      } catch (e) { console.error(e); alert("Failed to load design."); }
-      finally { if (fileInputRef.current) fileInputRef.current.value = ""; }
-  };
-
-  const handleLoadFromStorage = async (id: string) => {
-      try { const data = await StorageService.loadProject(id); loadProjectData(data); } catch (e) { console.error(e); }
+  const loadDesignFile = (file: DesignFile, filename: string | null) => {
+      loadProjectData({ ...file.project, id: file.meta.id, name: file.meta.name });
+      setCurrentFilename(filename);
+      setShowProjectManager(false);
   };
 
   const handleNewDesign = () => {
@@ -343,6 +451,7 @@ export const DobbyMaster: React.FC = () => {
       setWeftPatternString(`${s.weftPicks}A`);
       setProjectName('New Design');
       setCurrentProjectId(null);
+      setCurrentFilename(null);
       
       setShowStartup(false);
   };
@@ -683,7 +792,7 @@ export const DobbyMaster: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 overflow-hidden relative">
-         <input type="file" ref={fileInputRef} onChange={handleLoadFromFile} accept=".weave" style={{ display: 'none' }} />
+         <DialogHost />
          
          {showStartup && (
              <div className="fixed inset-0 z-[100] flex items-center justify-center bg-gray-900/90 backdrop-blur-sm p-4 animate-in fade-in duration-300">
@@ -708,13 +817,13 @@ export const DobbyMaster: React.FC = () => {
                                          <p className="text-sm text-gray-500">Configure parameters manually</p>
                                      </div>
                                  </button>
-                                 <button onClick={() => isTauri ? handleLoadFromFile() : fileInputRef.current?.click()} className="group flex flex-col items-center gap-4 p-8 border-2 border-gray-100 hover:border-emerald-500 hover:bg-emerald-50 transition-all rounded-2xl text-center">
+                                 <button onClick={() => setShowProjectManager(true)} className="group flex flex-col items-center gap-4 p-8 border-2 border-gray-100 hover:border-emerald-500 hover:bg-emerald-50 transition-all rounded-2xl text-center">
                                      <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
                                          <UploadIcon className="w-8 h-8 text-emerald-600" />
                                      </div>
                                      <div>
                                          <h3 className="font-bold text-gray-800 text-lg">Load Design</h3>
-                                         <p className="text-sm text-gray-500">Import a .weave project file</p>
+                                         <p className="text-sm text-gray-500">Browse your saved designs</p>
                                      </div>
                                  </button>
                              </div>
@@ -763,8 +872,8 @@ export const DobbyMaster: React.FC = () => {
             onFillPatternChange={setCurrentFillPatternId} 
             layoutCorner={layoutCorner} onLayoutCornerChange={setLayoutCorner}
             canUndo={history.past.length > 0} canRedo={false}
-            onUndo={undo} onRedo={()=>{}} onSaveToLibrary={handleSaveToLibrary} onSave={handleExport} onLoad={() => setShowProjectManager(true)}
-            onImport={() => isTauri ? handleLoadFromFile() : fileInputRef.current?.click()}
+            onUndo={undo} onRedo={()=>{}} onSaveToLibrary={handleSaveToLibrary} onSaveAsWeave={handleSaveAsWeave} onSave={handleExport} onLoad={() => setShowProjectManager(true)}
+            onImport={handleImportFiles}
             onDownloadPdf={handlePdfDownload} onApplyToWarp={() => { setYarnSelectorState({ isOpen: true, type: 'warp' }); }}
             onApplyToWeft={() => { setYarnSelectorState({ isOpen: true, type: 'weft' }); }}
         />
@@ -910,7 +1019,7 @@ export const DobbyMaster: React.FC = () => {
 
                 {(isWeaveMode || isSpecsMode || isYarnMode || isSimMode || isPatternMode) && (
                     <RightPanel
-                        settings={settings} onSettingsChange={handleSettingsChange} dentingPattern={dentingPatternString} onDentingChange={setDentingPatternString} onSnapshot={saveHistory} onLoadWeave={handleLoadWeave} customWeaves={customWeaves} onAddWeave={(w)=>setCustomWeaves(p=>[...p,w])} onUpdateWeave={(w)=>setCustomWeaves(p=>p.map(cw=>cw.id===w.id?w:cw))} onDeleteWeave={(id)=>setCustomWeaves(p=>(p as LibraryWeave[]).filter(cw=>cw.id!==id))} warpYarns={warpYarns} weftYarns={weftYarns} onUpdateWarpYarn={(c,d)=>setWarpYarns(p=>({...p,[c]:d}))} onUpdateWeftYarn={(c,d)=>setWeftYarns(p=>({...p,[c]:d}))} onUpdateAllYarns={(t,y)=>t==='warp'?setWarpYarns(y):setWeftYarns(y)} paletteColors={paletteColors} warpPatternString={warpPatternString} setWarpPatternString={setWarpPatternString} weftPatternString={weftPatternString} setWeftPatternString={setWeftPatternString} onOpenGridEditor={(t)=>setPatternManagerState({isOpen:true,type:t})} onOpenPatternGenerator={(t)=>setPatternManagerState({isOpen:true,type:t})} currentInput={{draft,pegPlan,warpPattern,weftPattern}} onApplyGenerated={(res)=>{saveHistory();if(res.draft)setDraft(deserializeGrid(res.draft));if(res.pegPlan)setPegPlan(deserializeGrid(res.pegPlan));if(res.warpPattern)setWarpPatternString(res.warpPattern);if(res.weftPattern)setWarpPatternString(res.weftPattern);}} onSimulate={()=>setShowSimModal(true)} selectedColorIndex={selectedColorIndex} onSelectColor={setSelectedColorIndex} onOpenDraftStudio={() => setShowDraftStudio(true)} onOpenPegPlanStudio={() => setShowPegPlanStudio(true)} activeYarnId={activeYarnId} selectedYarnType={selectedYarnType} onSelectYarn={(id, type) => { handleYarnSelect(id, type); handleModeChange('yarn'); }} onActiveYarnChange={(id) => { setActiveYarnId(id); handleModeChange('yarn'); }} forcedTab={rightPanelTab as any} onSyncGridDimensions={handleSyncGridDimensions}
+                        settings={settings} onSettingsChange={handleSettingsChange} dentingPattern={dentingPatternString} onDentingChange={setDentingPatternString} onSnapshot={saveHistory} onLoadWeave={handleLoadWeave} customWeaves={customWeaves} onAddWeave={(w)=>{ setCustomWeaves(p=>[...p,w]); persistWeave(w, true); }} onUpdateWeave={(w)=>{ setCustomWeaves(p=>p.map(cw=>cw.id===w.id?w:cw)); persistWeave(w, false); }} onDeleteWeave={(id)=>{ setCustomWeaves(p=>(p as LibraryWeave[]).filter(cw=>cw.id!==id)); removeWeaveFile(id); }} warpYarns={warpYarns} weftYarns={weftYarns} onUpdateWarpYarn={(c,d)=>setWarpYarns(p=>({...p,[c]:d}))} onUpdateWeftYarn={(c,d)=>setWeftYarns(p=>({...p,[c]:d}))} onUpdateAllYarns={(t,y)=>t==='warp'?setWarpYarns(y):setWeftYarns(y)} paletteColors={paletteColors} warpPatternString={warpPatternString} setWarpPatternString={setWarpPatternString} weftPatternString={weftPatternString} setWeftPatternString={setWeftPatternString} onOpenGridEditor={(t)=>setPatternManagerState({isOpen:true,type:t})} onOpenPatternGenerator={(t)=>setPatternManagerState({isOpen:true,type:t})} currentInput={{draft,pegPlan,warpPattern,weftPattern}} onApplyGenerated={(res)=>{saveHistory();if(res.draft)setDraft(deserializeGrid(res.draft));if(res.pegPlan)setPegPlan(deserializeGrid(res.pegPlan));if(res.warpPattern)setWarpPatternString(res.warpPattern);if(res.weftPattern)setWarpPatternString(res.weftPattern);}} onSimulate={()=>setShowSimModal(true)} selectedColorIndex={selectedColorIndex} onSelectColor={setSelectedColorIndex} onOpenDraftStudio={() => setShowDraftStudio(true)} onOpenPegPlanStudio={() => setShowPegPlanStudio(true)} activeYarnId={activeYarnId} selectedYarnType={selectedYarnType} onSelectYarn={(id, type) => { handleYarnSelect(id, type); handleModeChange('yarn'); }} onActiveYarnChange={(id) => { setActiveYarnId(id); handleModeChange('yarn'); }} forcedTab={rightPanelTab as any} onSyncGridDimensions={handleSyncGridDimensions}
                         isWeftScaled={isWeftScaled} onToggleWeftScale={() => { setIsWeftScaled(!isWeftScaled); if (!isWarpScaled) setIsWeftScaled(false); }}
                         isWarpScaled={isWarpScaled} onToggleWarpScale={() => { setIsWarpScaled(!isWarpScaled); if (!isWarpScaled) setIsWeftScaled(false); }}
                         onDropWeaveOnYarn={handleDropWeaveOnYarn}
@@ -922,7 +1031,7 @@ export const DobbyMaster: React.FC = () => {
         <FabricSimulationModal isOpen={showSimModal} onClose={()=>setShowSimModal(false)} weavePattern={weavePattern.pattern} structure={weavePattern.structure} epi={settings.epi} ppi={settings.ppi} dentingPlan={dentingPlan} weftZones={weftZones} warpYarns={warpYarns} weftYarns={weftYarns} warpYarnSequence={expandPatternString(warpPatternString)} weftYarnSequence={expandPatternString(weftPatternString)} />
         <PatternManagerModal isOpen={patternManagerState.isOpen} onClose={()=>setPatternManagerState({...patternManagerState,isOpen:false})} target={patternManagerState.type==='warp'?'Warp':'Weft'} patternString={patternManagerState.type==='warp'?warpPatternString:weftPatternString} onApply={(s,z)=>handlePatternApply(patternManagerState.type,s,z)} availableChars={Object.keys(patternManagerState.type==='warp'?warpYarns:weftYarns)} colorMap={patternManagerState.type==='warp'?warpColors:weftColors} onEditYarn={(c)=>handleYarnSelect(c,patternManagerState.type)} totalPicks={settings.weftPicks} initialZones={weftZones} yarns={patternManagerState.type==='warp'?warpYarns:weftYarns} onUpdateYarn={(c,d)=>{saveHistory();if(patternManagerState.type==='warp')setWarpYarns(p=>({...p,[c]:d}));else setWeftYarns(p=>({...p,[c]:d}))}} isScaled={patternManagerState.type==='warp' ? isWarpScaled : isWeftScaled} onToggleScale={patternManagerState.type==='warp' ? (() => { setIsWarpScaled(!isWarpScaled); if (!isWarpScaled) setIsWeftScaled(false); }) : (() => { setIsWeftScaled(!isWeftScaled); if (!isWarpScaled) setIsWarpScaled(false); })} />
         <YarnSelectorModal isOpen={yarnSelectorState.isOpen} onClose={()=>setYarnSelectorState({...yarnSelectorState,isOpen:false})} title={`Select ${yarnSelectorState.type==='warp'?'Warp':'Weft'} Yarn`} yarns={yarnSelectorState.type==='warp'?warpYarns:weftYarns} onSelect={(c, d)=>handleStructureApply(c, d)} isWarp={yarnSelectorState.type==='warp'} />
-        <ProjectManagerModal isOpen={showProjectManager} onClose={()=>setShowProjectManager(false)} onLoadProject={handleLoadFromStorage} onImport={() => isTauri ? handleLoadFromFile() : fileInputRef.current?.click()} />
+        <DesignBrowserModal isOpen={showProjectManager} onClose={()=>setShowProjectManager(false)} onLoadDesign={loadDesignFile} onMigrateLegacy={handleMigrateLegacy} hasLegacyData={hasLegacy} />
         <DraftStudioModal isOpen={showDraftStudio} onClose={() => setShowDraftStudio(false)} draft={draft} dentingPlan={dentingPlan} harnesses={settings.harnesses} warpThreads={settings.warpThreads} onSave={(d, de, w) => { saveHistory(); const newSettings = { ...settings, warpThreads: w }; handleSettingsChange(newSettings); setDraft(d); setDentingPlan(de); setShowDraftStudio(false); }} />
         <PegPlanStudioModal isOpen={showPegPlanStudio} onClose={() => setShowPegPlanStudio(false)} pegPlan={pegPlan} harnesses={settings.harnesses} weftPicks={settings.weftPicks} onSave={(p, h) => { saveHistory(); const newSettings = { ...settings, weftPicks: h }; handleSettingsChange(newSettings); setPegPlan(p); setShowPegPlanStudio(false); }} />
     </div>

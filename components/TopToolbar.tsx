@@ -25,6 +25,7 @@ interface TopToolbarProps {
     onUndo: () => void;
     onRedo: () => void;
     onSaveToLibrary: () => void;
+    onSaveAsWeave?: () => void;
     onSave: () => void;
     onLoad: () => void;
     onImport: () => void;
@@ -42,7 +43,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
     currentFillPatternId, onFillPatternChange,
     layoutCorner, onLayoutCornerChange,
     canUndo, canRedo, onUndo, onRedo,
-    onSaveToLibrary, onSave, onLoad, onImport,
+    onSaveToLibrary, onSaveAsWeave, onSave, onLoad, onImport,
     onApplyToWarp, onApplyToWeft,
     onDownloadPdf,
     isRightPanelCollapsed,
@@ -70,17 +71,22 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
                 </div>
 
                 <div className="flex items-center gap-1 bg-gray-50 p-1 rounded-lg border border-gray-200">
-                     <button onClick={onLoad} className="p-2 text-gray-500 hover:bg-blue-50 hover:text-blue-600 rounded-md transition-colors" title="Library">
+                     <button onClick={onLoad} className="p-2 text-gray-500 hover:bg-blue-50 hover:text-blue-600 rounded-md transition-colors" title="Open design (design browser)">
                         <HomeIcon className="w-4 h-4" />
                      </button>
-                     <button onClick={onSaveToLibrary} className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors" title="Save Library">
+                     <button onClick={onSaveToLibrary} className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors" title="Save design">
                         <SaveIcon className="w-4 h-4" />
                      </button>
+                     {onSaveAsWeave && (
+                        <button onClick={onSaveAsWeave} className="px-2 py-1.5 text-[11px] font-bold text-gray-600 hover:bg-blue-50 hover:text-blue-600 rounded-md transition-colors flex items-center gap-1" title="Save this design's structure to your weave library">
+                            <WeaveIcon className="w-4 h-4" /> Save as weave
+                        </button>
+                     )}
                      <div className="w-px h-4 bg-gray-300 mx-0.5"></div>
-                     <button onClick={onImport} className="p-2 text-gray-500 hover:bg-blue-50 hover:text-blue-600 rounded-md transition-colors" title="Import">
+                     <button onClick={onImport} className="p-2 text-gray-500 hover:bg-blue-50 hover:text-blue-600 rounded-md transition-colors" title="Import files (.wwdesign, .wwweave, .wwyarn, .wwpalette, .weave)">
                         <UploadIcon className="w-4 h-4" />
                      </button>
-                     <button onClick={onSave} className="p-2 text-gray-500 hover:bg-blue-50 hover:text-blue-600 rounded-md transition-colors" title="Export">
+                     <button onClick={onSave} className="p-2 text-gray-500 hover:bg-blue-50 hover:text-blue-600 rounded-md transition-colors" title="Save a copy of this design as a file">
                         <DownloadIcon className="w-4 h-4" />
                      </button>
                      <div className="w-px h-4 bg-gray-300 mx-0.5"></div>
