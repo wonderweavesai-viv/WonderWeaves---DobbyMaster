@@ -20,6 +20,10 @@ interface RenderOptions {
     backgroundColor?: string; 
     smoothingQuality?: 'low' | 'medium' | 'high' | 'none';
     overrideShadowAngle?: number; // Global lighting direction override
+    /** Internal: draw only one repeating tile (with a margin of threads on every side). */
+    _tile?: { cols: number; rows: number; marginCols: number; marginRows: number; w: number; h: number };
+    /** Set false to force drawing every thread (used to compare against the fast path). */
+    allowTiling?: boolean;
 }
 
 const shadowCanvas = document.createElement('canvas');
@@ -47,6 +51,7 @@ export const renderFabricToCanvas = (options: RenderOptions): HTMLCanvasElement 
         smoothingQuality = 'high',
         overrideShadowAngle
     } = options;
+    const tileOpt = options._tile;
 
     const epi = Math.max(1, rawEpi);
     const ppi = Math.max(1, rawPpi);
@@ -60,6 +65,7 @@ export const renderFabricToCanvas = (options: RenderOptions): HTMLCanvasElement 
     let targetCanvasWidth = Math.round((displayW / 96) * PX_PER_INCH);
     let targetCanvasHeight = Math.round((displayH / 96) * PX_PER_INCH);
 
+    if (tileOpt) { targetCanvasWidth = tileOpt.w; targetCanvasHeight = tileOpt.h; }
     if (targetCanvasWidth > MAX_CANVAS_DIM) targetCanvasWidth = MAX_CANVAS_DIM;
     if (targetCanvasHeight > MAX_CANVAS_DIM) targetCanvasHeight = MAX_CANVAS_DIM;
 
@@ -86,9 +92,58 @@ export const renderFabricToCanvas = (options: RenderOptions): HTMLCanvasElement 
      */
     const dentWidthPx = Math.max(0.1, (PX_PER_INCH * 2.0) / epi);
 
+    /**
+     * FAST PATH: a woven fabric repeats. Instead of drawing every thread of a huge canvas (hundreds of
+     * thousands of cells, three passes each), draw one repeat of the weave once, with a small margin so
+     * shadows join up, and copy it across the canvas.
+     */
+    const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+    const lcm = (a: number, b: number) => (a / gcd(a, b)) * b;
+    const sCycle = safePlan.reduce((a, b) => a + Math.max(0, b), 0);
+    const uniformRows = !(weftZones && weftZones.length) && !Object.values(weftYarns).some(y => y && (y as any).preferredPPI);
+    if (!tileOpt && options.allowTiling !== false && uniformRows && sCycle > 0 && Number.isInteger(sCycle)) {
+        const seqW = Math.max(1, warpYarnSequence.length), seqF = Math.max(1, weftYarnSequence.length);
+        let Pc = lcm(lcm(cols, seqW), sCycle);
+        let Pr = lcm(rows, seqF);
+        const MIN_TILE = 96; // enough threads that yarn texture variation does not look repeated
+        if (Pc < MIN_TILE) Pc *= Math.ceil(MIN_TILE / Pc);
+        if (Pr < MIN_TILE) Pr *= Math.ceil(MIN_TILE / Pr);
+        if (Pc <= 512 && Pr <= 512) {
+            const marginCols = sCycle * Math.ceil(3 / sCycle);
+            const marginRows = 3;
+            const threadPxX = (safePlan.length * dentWidthPx) / sCycle; // average width of one thread
+            const rowPx = PX_PER_INCH / ppi;
+            const tileW = (Pc / sCycle) * safePlan.length * dentWidthPx;
+            const tileH = Pr * rowPx;
+            if (tileW * tileH < canvas.width * canvas.height * 0.4) {
+                const mx = (marginCols / sCycle) * safePlan.length * dentWidthPx;
+                const my = marginRows * rowPx;
+                const tile = renderFabricToCanvas({
+                    ...options,
+                    _tile: { cols: Pc, rows: Pr, marginCols, marginRows, w: Math.ceil(tileW + 2 * mx) + 2, h: Math.ceil(tileH + 2 * my) + 2 },
+                });
+                const srcX = Math.round(mx), srcY = Math.round(my);
+                for (let m = 0; ; m++) {
+                    const y0 = Math.round(m * tileH);
+                    if (y0 >= canvas.height) break;
+                    const dh = Math.round((m + 1) * tileH) - y0;
+                    for (let k = 0; ; k++) {
+                        const x0 = Math.round(k * tileW);
+                        if (x0 >= canvas.width) break;
+                        const dw = Math.round((k + 1) * tileW) - x0;
+                        ctx.drawImage(tile, srcX, srcY, dw, dh, x0, y0, dw, dh);
+                    }
+                }
+                void threadPxX;
+                return canvas;
+            }
+        }
+    }
+
     const warpPositions: {x: number, w: number, jitter: number, dentSize: number}[] = [];
     let currentX = 0, dIdx = 0;
-    while (currentX < canvas.width) {
+    const maxThreads = tileOpt ? tileOpt.cols + 2 * tileOpt.marginCols : Infinity;
+    while (currentX < canvas.width && warpPositions.length < maxThreads) {
         const threads = Math.max(0, safePlan[dIdx % safePlan.length]);
         if (threads === 0) { 
             currentX += dentWidthPx; 
@@ -101,7 +156,7 @@ export const renderFabricToCanvas = (options: RenderOptions): HTMLCanvasElement 
                     dentSize: threads 
                 });
                 currentX += w;
-                if (currentX >= canvas.width) break;
+                if (currentX >= canvas.width || warpPositions.length >= maxThreads) break;
             }
         }
         dIdx++;
@@ -121,7 +176,8 @@ export const renderFabricToCanvas = (options: RenderOptions): HTMLCanvasElement 
 
     const rowY: number[] = [], rowHeights: number[] = [];
     let currentY = 0, rCount = 0;
-    while(currentY < canvas.height) {
+    const maxRows = tileOpt ? tileOpt.rows + 2 * tileOpt.marginRows : Infinity;
+    while(currentY < canvas.height && rCount < maxRows) {
         const r = rCount % rows;
         let h = PX_PER_INCH / ppi;
         if (weftZones) { 
@@ -196,13 +252,15 @@ export const renderFabricToCanvas = (options: RenderOptions): HTMLCanvasElement 
     // --- PASS 1 & 2 & 3: Triple-Pass Engine ---
     for (let pass = 0; pass < 3; pass++) {
         for (let r = 0; r < rCount; r++) {
-            const pR = r % rows;
+            const lr = tileOpt ? (((r - tileOpt.marginRows) % tileOpt.rows) + tileOpt.rows) % tileOpt.rows : r; // logical pick
+            const pR = lr % rows;
             const wYId = weftYarnSequence[pR % (weftYarnSequence.length || 1)] || 'A';
             const wDef = weftYarns[wYId], wTex = textureMap.get(`weft-${wYId}`);
             const gY = rowY[r], gH = rowHeights[r];
 
             for (let c = 0; c < totalCols; c++) {
-                const pC = c % cols;
+                const lc = tileOpt ? (((c - tileOpt.marginCols) % tileOpt.cols) + tileOpt.cols) % tileOpt.cols : c; // logical end
+                const pC = lc % cols;
                 const waYId = warpYarnSequence[pC % (warpYarnSequence.length || 1)] || 'A';
                 const waDef = warpYarns[waYId], waTex = textureMap.get(`warp-${waYId}`);
                 const { x: gX, w: gW, jitter: jit, dentSize } = warpPositions[c];
@@ -231,9 +289,9 @@ export const renderFabricToCanvas = (options: RenderOptions): HTMLCanvasElement 
                 if (pass === 0) {
                     // Pass 1: DRAW THE BED (Everything that is UNDER)
                     if (wTop) { 
-                        if (wTex && wOp > 0) drawThreadSegment(wTex, gX, gY, gW, gH, false, r, wOp, wOv, wT, wAO, jit); 
+                        if (wTex && wOp > 0) drawThreadSegment(wTex, gX, gY, gW, gH, false, lr, wOp, wOv, wT, wAO, jit); 
                     } else { 
-                        if (waTex && waOp > 0) drawThreadSegment(waTex, gX, gY, gW, gH, true, c, waOp, waOv, waT, waAO, jit); 
+                        if (waTex && waOp > 0) drawThreadSegment(waTex, gX, gY, gW, gH, true, lc, waOp, waOv, waT, waAO, jit); 
                     }
                 } 
                 else if (pass === 1) {
@@ -255,9 +313,9 @@ export const renderFabricToCanvas = (options: RenderOptions): HTMLCanvasElement 
                 else if (pass === 2) {
                     // Pass 3: DRAW THE SURFACE (Everything that is OVER)
                     if (wTop) { 
-                        if (waTex && waOp > 0) drawThreadSegment(waTex, gX, gY, gW, gH, true, c, waOp, waOv, waT, waAO, jit); 
+                        if (waTex && waOp > 0) drawThreadSegment(waTex, gX, gY, gW, gH, true, lc, waOp, waOv, waT, waAO, jit); 
                     } else { 
-                        if (wTex && wOp > 0) drawThreadSegment(wTex, gX, gY, gW, gH, false, r, wOp, wOv, wT, wAO, jit); 
+                        if (wTex && wOp > 0) drawThreadSegment(wTex, gX, gY, gW, gH, false, lr, wOp, wOv, wT, wAO, jit); 
                     }
                 }
             }
