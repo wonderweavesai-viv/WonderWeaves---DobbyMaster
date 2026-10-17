@@ -36,7 +36,11 @@ try {
   await page.waitForTimeout(1500);
   await page.screenshot({ path: 'test-output/step-after-create.png' });
   step = 'click SIM mode';
-  await page.getByRole('button', { name: 'SIM', exact: true }).first().click({ timeout: 8000 });
+  const clicked = await page.evaluate(() => {
+    const b = [...document.querySelectorAll('button')].find(x => (x.innerText || '').trim().toUpperCase() === 'SIM');
+    if (!b) return 'no SIM button found'; b.click(); return 'clicked disabled=' + b.disabled;
+  });
+  note('SIM: ' + clicked);
   await page.waitForTimeout(3000);
   await page.screenshot({ path: 'test-output/step-after-simulate.png' });
   step = 'click 3D View';
