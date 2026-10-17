@@ -36,7 +36,7 @@ try {
   await page.waitForTimeout(1500);
   await page.screenshot({ path: 'test-output/step-after-create.png' });
   step = 'click Simulate Fabric';
-  await page.getByText('Simulate Fabric', { exact: false }).first().click();
+  await page.getByText('Simulate Fabric', { exact: false }).first().click({ timeout: 8000 });
   await page.waitForTimeout(3000);
   await page.screenshot({ path: 'test-output/step-after-simulate.png' });
   step = 'click 3D View';
@@ -68,7 +68,12 @@ try {
   process.exit(ok ? 0 : 1);
 } catch (e) {
   note(`FAILED at step "${step}": ${String(e.message).split('\n')[0]}`);
-  try { await page.screenshot({ path: 'test-output/step-fail.png' }); note('body: ' + (await page.evaluate(() => document.body.innerText.slice(0, 300).replace(/\n/g, ' | ')))); } catch {}
+  try {
+    await page.screenshot({ path: 'test-output/step-fail.png' });
+    const btns = await page.evaluate(() => [...document.querySelectorAll('button')].filter(b => b.offsetParent).map(b => (b.innerText || b.title || b.getAttribute('aria-label') || '?').trim().replace(/\s+/g, ' ').slice(0, 24)).filter(Boolean));
+    note('visible buttons: ' + btns.join(' ; ').slice(0, 700));
+    note('body: ' + (await page.evaluate(() => document.body.innerText.slice(0, 400).replace(/\n/g, ' | '))));
+  } catch (e2) { note('diag failed: ' + e2.message.slice(0, 120)); }
   fs.writeFileSync('test-output/e2e.txt', out.join('\n'));
   await browser.close(); server.close();
   process.exit(1);
