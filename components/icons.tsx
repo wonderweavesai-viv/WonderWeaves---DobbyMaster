@@ -330,7 +330,7 @@ export const PlayCircleIcon: React.FC<{className?: string}> = ({className}) => (
 
 export const PresentationIcon: React.FC<{className?: string}> = ({className}) => (
     <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="2 3h20v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V3z" />
+      <path d="M2 3h20v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V3z" />
       <path d="M8 21h8" />
       <path d="M12 17v4" />
     </svg>

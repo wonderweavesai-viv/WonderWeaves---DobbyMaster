@@ -143,6 +143,7 @@ export const FabricSimulationModal: React.FC<FabricSimulationModalProps> = ({
     if (!isOpen || !weavePattern.length || !weavePattern[0]?.length) return;
 
     setIsGenerating(true);
+    let cancelled = false;
     
     const generate = async () => {
         try {
@@ -170,22 +171,40 @@ export const FabricSimulationModal: React.FC<FabricSimulationModalProps> = ({
                 const b64 = await invoke('render_fabric_native', { config: rustConfig });
                 setDataUrl(b64);
             } else {
-                // Fallback to JS Canvas
-                const canvas = renderFabricToCanvas({
-                    weavePattern, structure, epi, ppi, dentingPlan, weftZones,
-                    warpYarns, weftYarns,
-                    warpYarnSequence: warpYarnSequence.length > 0 ? warpYarnSequence : ['A'],
-                    weftYarnSequence: weftYarnSequence.length > 0 ? weftYarnSequence : ['A'],
-                    viewSide,
-                    dpi: simulationDpi,
-                    smoothingQuality: smoothing,
-                    width: DISPLAY_WIDTH,
-                    height: DISPLAY_HEIGHT,
-                    hideFloats: false,
-                    backgroundColor: bgMode === 'dark' ? '#050505' : '#ffffff',
-                    overrideShadowAngle: shadowAngle
-                });
-                setDataUrl(canvas.toDataURL());
+                // JS canvas renderer. The full-resolution render blocks the page for a while on
+                // large designs, so draw a quick low-resolution preview first and refine afterwards.
+                // On the 3D tab only the quick pass is needed (it is just a texture).
+                const renderAt = (dpi: number) => {
+                    const t0 = performance.now();
+                    const canvas = renderFabricToCanvas({
+                        weavePattern, structure, epi, ppi, dentingPlan, weftZones,
+                        warpYarns, weftYarns,
+                        warpYarnSequence: warpYarnSequence.length > 0 ? warpYarnSequence : ['A'],
+                        weftYarnSequence: weftYarnSequence.length > 0 ? weftYarnSequence : ['A'],
+                        viewSide,
+                        dpi,
+                        smoothingQuality: dpi < 100 ? 'low' : smoothing,
+                        width: DISPLAY_WIDTH,
+                        height: DISPLAY_HEIGHT,
+                        hideFloats: false,
+                        backgroundColor: bgMode === 'dark' ? '#050505' : '#ffffff',
+                        overrideShadowAngle: shadowAngle
+                    });
+                    console.info(`[perf] fabric render at ${dpi} dpi took ${Math.round(performance.now() - t0)} ms`);
+                    return canvas.toDataURL();
+                };
+                if (activeTab === '3d' || simulationDpi <= 96) {
+                    setDataUrl(renderAt(Math.min(simulationDpi, activeTab === '3d' ? 72 : simulationDpi)));
+                } else {
+                    setDataUrl(renderAt(72));
+                    setIsGenerating(false);
+                    await new Promise(r => setTimeout(r, 120));
+                    if (cancelled) return;
+                    setIsGenerating(true);
+                    await new Promise(r => setTimeout(r, 30));
+                    if (cancelled) return;
+                    setDataUrl(renderAt(simulationDpi));
+                }
             }
         } catch (err) {
             console.error("Fabric rendering failed:", err);
@@ -196,9 +215,9 @@ export const FabricSimulationModal: React.FC<FabricSimulationModalProps> = ({
 
     // Small delay to allow UI to render loading state
     const timer = setTimeout(generate, 50);
-    return () => clearTimeout(timer);
+    return () => { cancelled = true; clearTimeout(timer); };
 
-  }, [isOpen, weavePattern, structure, epi, ppi, dentingPlan, weftZones, warpYarns, weftYarns, warpYarnSequence, weftYarnSequence, simulationDpi, smoothing, viewSide, bgMode, shadowAngle]);
+  }, [isOpen, weavePattern, structure, epi, ppi, dentingPlan, weftZones, warpYarns, weftYarns, warpYarnSequence, weftYarnSequence, simulationDpi, smoothing, viewSide, bgMode, shadowAngle, activeTab]);
 
   const handleDownload = () => {
       if (!dataUrl) return;

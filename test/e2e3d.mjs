@@ -22,7 +22,7 @@ fs.mkdirSync('test-output', { recursive: true });
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 console.log('cpus', (await import('node:os')).cpus().length);
-page.on('console', (m) => { if (['error'].includes(m.type())) note(`console.error: ${m.text().slice(0, 300)}`); });
+page.on('console', (m) => { if (m.type() === 'error') note(`console.error: ${m.text().slice(0, 300)}`); else if (m.text().startsWith('[perf]')) note(m.text()); });
 page.on('pageerror', (e) => note(`pageerror: ${e.message.slice(0, 300)}`));
 
 let step = 'open app';
