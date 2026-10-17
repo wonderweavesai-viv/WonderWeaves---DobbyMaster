@@ -101,6 +101,8 @@ export const FabricSimulationModal: React.FC<FabricSimulationModalProps> = ({
   warpYarns, weftYarns, warpYarnSequence, weftYarnSequence, embedded
 }) => {
   const [dataUrl, setDataUrl] = useState<string>('');
+  const dataUrlRef = useRef<string>('');
+  useEffect(() => { dataUrlRef.current = dataUrl; }, [dataUrl]);
   const [simulationDpi, setSimulationDpi] = useState<number>(144); 
   const [smoothing, setSmoothing] = useState<'high' | 'medium' | 'low' | 'none'>('high');
   const [viewSide, setViewSide] = useState<'face' | 'back'>('face');
@@ -142,6 +144,8 @@ export const FabricSimulationModal: React.FC<FabricSimulationModalProps> = ({
   useEffect(() => {
     if (!isOpen || !weavePattern.length || !weavePattern[0]?.length) return;
 
+    // The 3D tab only needs a small texture for the drape view, so reuse what is already drawn.
+    if (activeTab === '3d' && dataUrlRef.current) { setIsGenerating(false); return; }
     setIsGenerating(true);
     let cancelled = false;
     
@@ -194,7 +198,7 @@ export const FabricSimulationModal: React.FC<FabricSimulationModalProps> = ({
                     return canvas.toDataURL();
                 };
                 if (activeTab === '3d' || simulationDpi <= 96) {
-                    setDataUrl(renderAt(Math.min(simulationDpi, activeTab === '3d' ? 72 : simulationDpi)));
+                    setDataUrl(renderAt(Math.min(simulationDpi, activeTab === '3d' ? 48 : simulationDpi)));
                 } else {
                     setDataUrl(renderAt(72));
                     setIsGenerating(false);
