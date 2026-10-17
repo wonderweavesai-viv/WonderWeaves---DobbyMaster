@@ -35,8 +35,8 @@ try {
   await page.locator('button.flex-\\[2\\]').first().click();
   await page.waitForTimeout(1500);
   await page.screenshot({ path: 'test-output/step-after-create.png' });
-  step = 'click Simulate Fabric';
-  await page.getByText('Simulate Fabric', { exact: false }).first().click({ timeout: 8000 });
+  step = 'click SIM mode';
+  await page.getByRole('button', { name: 'SIM', exact: true }).first().click({ timeout: 8000 });
   await page.waitForTimeout(3000);
   await page.screenshot({ path: 'test-output/step-after-simulate.png' });
   step = 'click 3D View';
