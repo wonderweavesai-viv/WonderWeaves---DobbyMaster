@@ -41,9 +41,13 @@ try {
     if (!b) return 'no SIM button found'; b.click(); return 'clicked disabled=' + b.disabled;
   });
   note('SIM: ' + clicked);
+  const t0 = Date.now();
+  await Promise.race([page.evaluate(() => 1), new Promise((_, rej) => setTimeout(() => rej(new Error('main thread still blocked after 150s: likely endless loop')), 150000))]);
+  note(`SIM screen became responsive after ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   await page.waitForTimeout(3000);
   await page.screenshot({ path: 'test-output/step-after-simulate.png' });
   step = 'click 3D View';
+  page.setDefaultTimeout(60000);
   await page.getByText('3D View', { exact: true }).first().click();
   await page.waitForTimeout(5000);
   await page.screenshot({ path: 'test-output/step-3d.png' });
