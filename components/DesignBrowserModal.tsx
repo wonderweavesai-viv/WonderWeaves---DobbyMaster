@@ -179,7 +179,7 @@ export const DesignBrowserModal: React.FC<DesignBrowserModalProps> = ({ isOpen, 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 md:p-6 bg-gray-900/80 backdrop-blur-sm" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="fixed inset-0 z-[150] flex items-center justify-center p-3 md:p-6 bg-gray-900/80 backdrop-blur-sm" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-[1500px] h-[92vh] flex flex-col overflow-hidden text-gray-900">
         {/* Header */}
         <div className="px-5 py-3 border-b border-gray-200 bg-gray-50 flex flex-wrap items-center gap-3">
